@@ -1,0 +1,23 @@
+{
+  "bull": {
+    "tier1": 40,
+    "tier2": 25,
+    "tier3": 15,
+    "tier4": 10,
+    "cash": 10
+  },
+  "neutral": {
+    "tier1": 60,
+    "tier2": 20,
+    "tier3": 5,
+    "tier4": 0,
+    "cash": 15
+  },
+  "bear": {
+    "tier1": 70,
+    "tier2": 5,
+    "tier3": 0,
+    "tier4": 0,
+    "cash": 25
+  }
+}

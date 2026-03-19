@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Coolbreeze (Multi-Strategy Agent)",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd /Users/deanjackson/trading-agent/trading-agent && npm start"],
+      "port": 3333
+    },
+    {
+      "name": "BaseWaves (Next.js)",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd /Users/deanjackson/trading-agent/BaseWaves && npm run dev"],
+      "port": 3000
+    },
+    {
+      "name": "Hardhat Node (Local Chain)",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd /Users/deanjackson/trading-agent/BaseWaves && npx hardhat node"],
+      "port": 8545
+    }
+  ]
+}

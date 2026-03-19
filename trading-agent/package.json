@@ -1,0 +1,22 @@
+{
+  "name": "base-trading-agent",
+  "version": "0.1.0",
+  "description": "AI trading agent on Base Sepolia testnet",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/index.ts",
+    "wallet": "tsx src/wallet.ts",
+    "check": "tsx src/check.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "ethers": "^6.13.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  }
+}

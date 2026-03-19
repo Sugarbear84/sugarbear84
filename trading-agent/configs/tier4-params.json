@@ -1,0 +1,22 @@
+{
+  "name": "The Mob",
+  "assets": ["BRETT", "TOSHI", "DEGEN"],
+  "cycleMins": 3,
+  "stopLossPercent": 6,
+  "takeProfitPercent": 20,
+  "takeProfitPartial1Percent": 15,
+  "takeProfitPartial1Size": 0.5,
+  "maxPositionPercent": 2.5,
+  "maxTotalTierPercent": 10,
+  "minConfidence": 0.70,
+  "maxConcurrentPositions": 3,
+  "maxDailyLossPercent": 3,
+  "deactivateCooldownHours": 48,
+  "activationCriteria": {
+    "tier1MustBeBullish": true,
+    "tier2MustBeActive": true,
+    "fearGreedMinimum": 75,
+    "altcoinDominanceMinimum": 8,
+    "memeVolumeSpikeRequired": true
+  }
+}

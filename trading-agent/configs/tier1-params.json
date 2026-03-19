@@ -1,0 +1,12 @@
+{
+  "name": "Blue Chip Foundation",
+  "assets": ["ETH", "BTC"],
+  "researchCycleDays": 14,
+  "researchDayOfWeek": 0,
+  "researchHour": 20,
+  "stopLossPercent": 10,
+  "takeProfitPercent": 20,
+  "maxPositionPercent": 8,
+  "minConfidence": 0.65,
+  "maxConcurrentPositions": 2
+}
