@@ -1,0 +1,11 @@
+{
+  "name": "DeFi Infrastructure",
+  "assets": ["UNI", "AAVE", "LINK"],
+  "researchDaysOfMonth": [1, 10, 20],
+  "researchHour": 20,
+  "stopLossPercent": 10,
+  "takeProfitPercent": 25,
+  "maxPositionPercent": 6,
+  "minConfidence": 0.70,
+  "maxConcurrentPositions": 3
+}

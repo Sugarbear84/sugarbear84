@@ -1,0 +1,10 @@
+{
+  "name": "Emerging Products",
+  "assets": ["BNKR"],
+  "triggerOnlyInBull": true,
+  "stopLossPercent": 12,
+  "takeProfitPercent": 40,
+  "maxPositionPercent": 4,
+  "minConfidence": 0.75,
+  "maxConcurrentPositions": 2
+}
