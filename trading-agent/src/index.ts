@@ -33,7 +33,7 @@ import { loadLedger, executePaperTrade, getPortfolioSummary, recordPortfolioSnap
 import { classifyMarket, formatRouterSummary, type RouterResult } from './router.js';
 import { runMonitor }                              from './monitor.js';
 import { generateWeeklySummary, appendMarketState } from './analysis.js';
-import { startDashboard, setDashboardMarket } from './dashboard.js';
+import { startDashboard, setDashboardMarket, isAgentPaused, registerTierTrigger, addResearchEntry } from './dashboard.js';
 import { isResearchDue as tier1Due, markResearchDone } from './brain-tier1.js';
 import { isResearchDue as tier2Due }                   from './brain-tier2.js';
 import { getTier4Decision, isInCooldown }           from './brain-tier4.js';
@@ -63,6 +63,7 @@ let tier2WasProfitable = false;         // Updated after each Tier 2 research
 // ── Position Monitor (every 5 min, no Claude) ─────────────────
 
 async function monitorLoop(): Promise<void> {
+  if (isAgentPaused()) return;
   try {
     const result = await runMonitor();
     if (result.closedCount > 0) {
@@ -77,6 +78,7 @@ async function monitorLoop(): Promise<void> {
 // ── Market State (every 30 min) ───────────────────────────────
 
 async function updateMarketState(): Promise<void> {
+  if (isAgentPaused()) return;
   try {
     const market = await getMarketData();
     if (market.ethPrice === 0) {
@@ -148,6 +150,17 @@ async function runTier1Research(currentEthPrice: number, change24h: number): Pro
     log(`   SL: ${directive.stopLossPrice ? '$' + directive.stopLossPrice.toFixed(2) : 'N/A'} | TP: ${directive.takeProfitPrice ? '$' + directive.takeProfitPrice.toFixed(2) : 'N/A'}`);
     log(`   Next research: ${directive.nextResearchDate}`);
 
+    addResearchEntry({
+      tier: 1, asset: 'ETH',
+      directive: directive.directive,
+      confidence: directive.confidence,
+      thesis: directive.thesis,
+      timestamp: new Date().toISOString(),
+      nextResearch: directive.nextResearchDate,
+      stopLoss: directive.stopLossPrice,
+      takeProfit: directive.takeProfitPrice,
+    });
+
     if (directive.directive === 'LONG' && directive.confidence >= 0.65) {
       const ledger  = loadLedger();
       const total   = ledger.usdBalance + ledger.ethBalance * currentEthPrice;
@@ -183,18 +196,37 @@ async function runTier2Research(currentEthPrice: number): Promise<void> {
   log('═'.repeat(60));
   log('🔬 TIER 2 RESEARCH — Tri-weekly DeFi directive');
 
+  // Fetch real prices + 7d/30d changes for UNI, AAVE, LINK from CoinGecko
+  let defiPrices: Record<string, { price: number; change7d: number; change30d: number; vol24h: number }> = {};
+  try {
+    const cgRes = await fetch(
+      'https://api.coingecko.com/api/v3/simple/price?ids=uniswap,aave,chainlink&vs_currencies=usd' +
+      '&include_7d_change=true&include_30d_change=true&include_24hr_vol=true'
+    );
+    const cgData = await cgRes.json() as Record<string, any>;
+    defiPrices = {
+      UNI:  { price: cgData.uniswap?.usd ?? 0,   change7d: cgData.uniswap?.usd_7d_change ?? 0,   change30d: cgData.uniswap?.usd_30d_change ?? 0,   vol24h: cgData.uniswap?.usd_24h_vol ?? 0 },
+      AAVE: { price: cgData.aave?.usd ?? 0,       change7d: cgData.aave?.usd_7d_change ?? 0,       change30d: cgData.aave?.usd_30d_change ?? 0,       vol24h: cgData.aave?.usd_24h_vol ?? 0 },
+      LINK: { price: cgData.chainlink?.usd ?? 0,  change7d: cgData.chainlink?.usd_7d_change ?? 0,  change30d: cgData.chainlink?.usd_30d_change ?? 0,  vol24h: cgData.chainlink?.usd_24h_vol ?? 0 },
+    };
+    log(`📊 DeFi prices — UNI: $${defiPrices.UNI.price.toFixed(2)} | AAVE: $${defiPrices.AAVE.price.toFixed(2)} | LINK: $${defiPrices.LINK.price.toFixed(2)}`);
+  } catch (err: any) {
+    log(`⚠️  DeFi price fetch failed: ${err.message} — proceeding with zeroed prices`);
+  }
+
   const DEFI_ASSETS: Array<'UNI' | 'AAVE' | 'LINK'> = ['UNI', 'AAVE', 'LINK'];
 
   const { getTier2Directive } = await import('./brain-tier2.js');
 
   for (const asset of DEFI_ASSETS) {
+    const p = defiPrices[asset] ?? { price: 0, change7d: 0, change30d: 0, vol24h: 0 };
     try {
       const directive = await getTier2Directive({
         asset,
-        currentPrice: 0,   // Callers should populate via CoinGecko multi-price
-        change7d:     0,
-        change30d:    0,
-        volume7dAvg:  0,
+        currentPrice: p.price,
+        change7d:     p.change7d,
+        change30d:    p.change30d,
+        volume7dAvg:  p.vol24h,
         marketState:  lastMarketResult?.state ?? 'NEUTRAL',
         fearGreed:    lastMarketResult?.fearGreed ?? 50,
       });
@@ -202,6 +234,15 @@ async function runTier2Research(currentEthPrice: number): Promise<void> {
       log(`📋 Tier 2 ${asset}: ${directive.decision} | Alloc: ${directive.targetAllocationPct}% | Confidence: ${(directive.confidence * 100).toFixed(0)}%`);
       log(`   ${directive.rationale}`);
       log(`   Next research: ${directive.nextResearchDate}`);
+
+      addResearchEntry({
+        tier: 2, asset,
+        directive: directive.decision,
+        confidence: directive.confidence,
+        thesis: directive.rationale,
+        timestamp: new Date().toISOString(),
+        nextResearch: directive.nextResearchDate,
+      });
 
       if (directive.decision === 'ACCUMULATE' && directive.confidence >= 0.70) {
         tier2WasProfitable = true; // Marks Tier 2 as active for Tier 4 gate
@@ -216,39 +257,59 @@ async function runTier2Research(currentEthPrice: number): Promise<void> {
 
 // ── Tier 4: Meme Momentum (3-min, only when activated) ────────
 
-async function tier4Scan(): Promise<void> {
-  if (!lastMarketResult?.tier4Criteria.allMet) return;
-  if (isInCooldown()) {
+async function tier4Scan(force = false): Promise<void> {
+  if (isAgentPaused()) return;
+  if (!force && !lastMarketResult?.tier4Criteria.allMet) {
+    if (force === false) log('⏭️  Tier 4 skipped — activation criteria not met (use manual trigger to force)');
+    return;
+  }
+  if (!force && isInCooldown()) {
     log('⏸️  Tier 4 in cooldown — skipping scan');
     return;
   }
 
+  log('═'.repeat(60));
+  log(`🎰 TIER 4 SCAN — Meme momentum${force ? ' (manual trigger)' : ''}`);
+
   try {
     const ledger = loadLedger();
-    const total  = ledger.usdBalance + ledger.ethBalance * (lastMarketResult?.ethChange24h ?? 2000);
-    const tier4Exposure = 0; // TODO: sum open Tier 4 positions from ledger
+    const ethPrice = lastMarketResult?.ethChange24h ?? 2000;
+    const total  = ledger.usdBalance + ledger.ethBalance * ethPrice;
+
+    const mockCriteria = lastMarketResult?.tier4Criteria ?? {
+      allMet: false, tier1Bullish: false, tier2Active: false,
+      fearGreedAbove75: false, altSeason: false, memeVolume: false,
+    };
 
     const { getTier4Decision } = await import('./brain-tier4.js');
     const decision = await getTier4Decision({
-      candidates: [], // TODO: populate from DEX screener / event logs
-      criteria:   lastMarketResult!.tier4Criteria,
-      fearGreed:  lastMarketResult!.fearGreed,
-      altcoinDominance: lastMarketResult!.altcoinDominance,
+      candidates: [],
+      criteria:   mockCriteria,
+      fearGreed:  lastMarketResult?.fearGreed ?? 50,
+      altcoinDominance: lastMarketResult?.altcoinDominance ?? 40,
       portfolioValue: total,
-      currentTier4Exposure: tier4Exposure,
+      currentTier4Exposure: 0,
       openPositions: ledger.positions.filter(p => p.status === 'OPEN').length,
     });
 
+    log(`📋 T4 Decision: ${decision.action} | ${decision.reasoning}`);
+
+    addResearchEntry({
+      tier: 4, asset: decision.symbol ?? 'MEME',
+      directive: decision.action,
+      confidence: 0.5,
+      thesis: decision.reasoning,
+      timestamp: new Date().toISOString(),
+    });
+
     if (decision.action === 'BUY' && decision.symbol && decision.amountUsd) {
-      log(`🎰 T4 BUY ${decision.symbol} $${decision.amountUsd.toFixed(2)} | ${decision.reasoning}`);
-      // Paper trade execution for meme coins
-      // TODO: add meme coin price fetch for actual execution
-    } else {
-      log(`🎰 T4 SKIP: ${decision.reasoning}`);
+      log(`🎰 T4 BUY ${decision.symbol} $${decision.amountUsd.toFixed(2)}`);
     }
   } catch (err: any) {
     log(`⚠️  Tier 4 scan error: ${err.message}`);
   }
+
+  log('═'.repeat(60));
 }
 
 // ── Boot Sequence ─────────────────────────────────────────────
@@ -297,6 +358,31 @@ async function main(): Promise<void> {
   setInterval(tier4Scan, TIER4_INTERVAL_MS);
 
   startDashboard();
+
+  // Register manual research triggers for dashboard footer
+  registerTierTrigger(1, async () => {
+    const market = await getMarketData();
+    await runTier1Research(market.ethPrice || 2000, market.change24h || 0);
+  });
+  registerTierTrigger(2, async () => {
+    const market = await getMarketData();
+    await runTier2Research(market.ethPrice || 2000);
+  });
+  registerTierTrigger(3, async () => {
+    log('⚡ Tier 3 manual trigger — event-driven scan (no candidates queued)');
+    addResearchEntry({
+      tier: 3, asset: 'BNKR',
+      directive: 'SKIP',
+      confidence: 0,
+      thesis: 'Tier 3 is event-driven. No active emerging protocol signals queued. It activates automatically when TVL growth >20%/month and ETH is in uptrend.',
+      timestamp: new Date().toISOString(),
+    });
+  });
+  registerTierTrigger(4, async () => {
+    log('⚡ Tier 4 manual scan triggered (force mode)');
+    await tier4Scan(true);
+  });
+
   log('⏰ All loops running. Press Ctrl+C to stop.\n');
 }
 
