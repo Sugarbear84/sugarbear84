@@ -31,6 +31,7 @@ export async function getMarketData(): Promise<MarketData> {
       `${COINGECKO_URL}/coins/ethereum/market_chart?vs_currency=usd&days=1`
     );
     const chart = await chartRes.json();
+    if (!chart?.prices?.length) throw new Error('No price chart data returned');
     const prices = chart.prices.map((p: number[]) => p[1]);
     const high24h = Math.max(...prices);
     const low24h = Math.min(...prices);
@@ -80,8 +81,8 @@ export async function getAlchemyPriceHistory(): Promise<PricePoint[]> {
 
     const body = {
       symbol: 'ETH',
-      startTime: Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60, // 7 days ago
-      endTime: Math.floor(Date.now() / 1000),
+      startTime: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      endTime: new Date().toISOString(),
       interval: '1h',
     };
 
