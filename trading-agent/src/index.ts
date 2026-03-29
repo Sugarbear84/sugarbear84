@@ -27,17 +27,48 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import * as fs from 'fs';
+import * as path from 'path';
 import { loadWallet, getEthBalance } from './wallet.js';
 import { getMarketData, recordPrice, getAlchemyPriceHistory, getAlchemyWalletHistory } from './datafeed.js';
 import { loadLedger, executePaperTrade, getPortfolioSummary, recordPortfolioSnapshot } from './executor.js';
 import { classifyMarket, formatRouterSummary, type RouterResult } from './router.js';
 import { runMonitor }                              from './monitor.js';
 import { generateWeeklySummary, appendMarketState } from './analysis.js';
-import { startDashboard, setDashboardMarket, isAgentPaused, registerTierTrigger, addResearchEntry } from './dashboard.js';
+import { startDashboard, setDashboardMarket, isAgentPaused, isSprintMode, registerTierTrigger, addResearchEntry } from './dashboard.js';
 import { isResearchDue as tier1Due, markResearchDone } from './brain-tier1.js';
 import { isResearchDue as tier2Due }                   from './brain-tier2.js';
 import { getTier4Decision, isInCooldown }           from './brain-tier4.js';
 import { getPriceHistory as alchemyPriceHistory }    from './research/alchemy-client.js';
+
+// ── DCA state ────────────────────────────────────────────────
+const DCA_STATE_FILE = path.join(process.cwd(), 'data', 'dca-state.json');
+interface DcaState { [symbol: string]: { tranches: number; lastTrancheTime: string } }
+
+function loadDcaState(): DcaState {
+  try { return JSON.parse(fs.readFileSync(DCA_STATE_FILE, 'utf-8')); } catch { return {}; }
+}
+function saveDcaState(state: DcaState): void {
+  fs.mkdirSync(path.dirname(DCA_STATE_FILE), { recursive: true });
+  fs.writeFileSync(DCA_STATE_FILE, JSON.stringify(state, null, 2));
+}
+function canDcaTranche(symbol: string, fearGreed: number, maxTranches = 3, _maxExposurePct = 8): boolean {
+  if (fearGreed >= 30) return false; // only in extreme fear
+  const state = loadDcaState();
+  const s = state[symbol];
+  if (!s) return true;
+  if (s.tranches >= maxTranches) return false;
+  const cooldownHours = isSprintMode() ? 6 : 48;
+  const elapsed = Date.now() - new Date(s.lastTrancheTime).getTime();
+  return elapsed > cooldownHours * 60 * 60 * 1000;
+}
+function recordDcaTranche(symbol: string): void {
+  const state = loadDcaState();
+  const s = state[symbol] ?? { tranches: 0, lastTrancheTime: '' };
+  s.tranches += 1;
+  s.lastTrancheTime = new Date().toISOString();
+  state[symbol] = s;
+  saveDcaState(state);
+}
 
 // ── Config ─────────────────────────────────────────────────────
 
@@ -100,11 +131,17 @@ async function updateMarketState(): Promise<void> {
       ethChange24h: lastMarketResult.ethChange24h,
     });
 
-    // Check if Tier 1 research is due
-    if (tier1Due()) await runTier1Research(market.ethPrice, market.change24h);
+    // Check if Tier 1 research is due (sprint: every 3 days)
+    const tier1IsDue = isSprintMode()
+      ? (() => { try { const d = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data', 'tier1-last-research.json'), 'utf-8')); return (Date.now() - new Date(d.timestamp).getTime()) > 3 * 24 * 60 * 60 * 1000; } catch { return true; } })()
+      : tier1Due();
+    if (tier1IsDue) await runTier1Research(market.ethPrice, market.change24h);
 
-    // Check if Tier 2 research is due
-    if (tier2Due()) await runTier2Research(market.ethPrice);
+    // Check if Tier 2 research is due (sprint: every 5 days)
+    const tier2IsDue = isSprintMode()
+      ? (() => { try { const d = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data', 'tier2-last-research.json'), 'utf-8')); return (Date.now() - new Date(d.timestamp).getTime()) > 5 * 24 * 60 * 60 * 1000; } catch { return true; } })()
+      : tier2Due();
+    if (tier2IsDue) await runTier2Research(market.ethPrice);
 
   } catch (err: any) {
     log(`⚠️  Market state error: ${err.message}`);
@@ -178,6 +215,23 @@ async function runTier1Research(currentEthPrice: number, change24h: number): Pro
       }
     }
 
+    // DCA accumulation in extreme fear
+    if (lastMarketResult && lastMarketResult.fearGreed < 30 &&
+        ['BEAR', 'NEUTRAL'].includes(lastMarketResult.state)) {
+      if (canDcaTranche('ETH', lastMarketResult.fearGreed)) {
+        const ledger = loadLedger();
+        const total = ledger.usdBalance + ledger.ethBalance * currentEthPrice;
+        const tradeUsd = total * 0.025; // 2.5% tranche
+        if (ledger.usdBalance >= tradeUsd && tradeUsd > 0) {
+          const sl = currentEthPrice * 0.92;
+          const tp = currentEthPrice * 1.25;
+          const dcaResult = executePaperTrade('BUY', tradeUsd, currentEthPrice, sl, tp, ledger, { pair: 'ETH/USDC', tier: 1 });
+          recordDcaTranche('ETH');
+          log(`📉 DCA tranche: BUY ETH $${tradeUsd.toFixed(2)} @ $${currentEthPrice.toFixed(2)} (F&G: ${lastMarketResult.fearGreed}) → ${dcaResult}`);
+        }
+      }
+    }
+
     markResearchDone();
     log('═'.repeat(60));
   } catch (err: any) {
@@ -246,6 +300,21 @@ async function runTier2Research(currentEthPrice: number): Promise<void> {
 
       if (directive.decision === 'ACCUMULATE' && directive.confidence >= 0.70) {
         tier2WasProfitable = true; // Marks Tier 2 as active for Tier 4 gate
+
+        // Execute paper trade for T2 ACCUMULATE
+        const assetPrice = defiPrices[asset]?.price ?? 0;
+        if (assetPrice > 0) {
+          const ledger = loadLedger();
+          const total = ledger.usdBalance + ledger.ethBalance * currentEthPrice;
+          const sizePct = Math.max(0, Math.min(6, directive.targetAllocationPct ?? 3));
+          const tradeUsd = total * (sizePct / 100);
+          if (ledger.usdBalance >= tradeUsd && tradeUsd > 0) {
+            const sl = assetPrice * (1 - 10 / 100);
+            const tp = assetPrice * (1 + 20 / 100);
+            const tradeResult = executePaperTrade('BUY', tradeUsd, assetPrice, sl, tp, ledger, { pair: `${asset}/USDC` });
+            log(`💎 T2 paper BUY ${asset} $${tradeUsd.toFixed(2)} @ $${assetPrice.toFixed(2)} → ${tradeResult}`);
+          }
+        }
       }
     } catch (err: any) {
       log(`⚠️  Tier 2 ${asset} error: ${err.message}`);

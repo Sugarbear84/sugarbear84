@@ -14,6 +14,8 @@
 import * as dotenv from 'dotenv';
 dotenv.config();
 
+import { isSprintMode } from './dashboard.js';
+
 export type MarketState = 'BULL' | 'NEUTRAL' | 'BEAR';
 
 export interface Allocation {
@@ -141,13 +143,17 @@ function checkTier4(
   const altcoinSeasonActive = altcoinDominance > 8;
   const memeVolumeSpike     = altcoinDominance > 10 && fearGreed > 70;
 
+  const allMet = isSprintMode()
+    ? (tier1Bullish && tier2Active && fearGreed > 50)
+    : (tier1Bullish && tier2Active && fearGreedAbove75 && altcoinSeasonActive && memeVolumeSpike);
+
   return {
     tier1Bullish,
     tier2Active,
     fearGreedAbove75,
     altcoinSeasonActive,
     memeVolumeSpike,
-    allMet: tier1Bullish && tier2Active && fearGreedAbove75 && altcoinSeasonActive && memeVolumeSpike,
+    allMet,
   };
 }
 

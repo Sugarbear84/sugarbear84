@@ -125,6 +125,16 @@ export async function runMonitor(): Promise<MonitorResult> {
       }
     }
 
+    // Time-based exit for positions with maxHoldHours set
+    if (!shouldClose && pos.maxHoldHours && pos.status === 'OPEN') {
+      const elapsedMs = Date.now() - new Date(pos.timestamp).getTime();
+      if (elapsedMs > pos.maxHoldHours * 60 * 60 * 1000) {
+        exitPrice = currentPrice;
+        shouldClose = true;
+        closeReason = 'TIME_LIMIT';
+      }
+    }
+
     if (shouldClose) {
       const units    = pos.amountUsd / pos.entryPrice;
       const exitVal  = units * exitPrice;

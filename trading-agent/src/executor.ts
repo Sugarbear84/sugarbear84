@@ -19,6 +19,8 @@ export interface Position {
   status: 'OPEN' | 'CLOSED';
   exitPrice?: number;
   pnl?: number;
+  maxHoldHours?: number;
+  tier?: number;
 }
 
 export interface PortfolioSnapshot {
@@ -64,7 +66,8 @@ export function executePaperTrade(
   ethPrice: number,
   stopLoss: number | null,
   takeProfit: number | null,
-  ledger: Ledger
+  ledger: Ledger,
+  opts?: { pair?: string; maxHoldHours?: number; tier?: number }
 ): string {
   const ethAmount = amountUsd / ethPrice;
   if (action === 'BUY') {
@@ -78,8 +81,10 @@ export function executePaperTrade(
   }
   const position: Position = {
     id: `trade-${Date.now()}`,
-    action, pair: 'ETH/USDC', entryPrice: ethPrice, amountUsd,
+    action, pair: opts?.pair ?? 'ETH/USDC', entryPrice: ethPrice, amountUsd,
     stopLoss, takeProfit, timestamp: new Date().toISOString(), status: 'OPEN',
+    ...(opts?.maxHoldHours !== undefined ? { maxHoldHours: opts.maxHoldHours } : {}),
+    ...(opts?.tier !== undefined ? { tier: opts.tier } : {}),
   };
   ledger.positions.push(position);
   saveLedger(ledger);

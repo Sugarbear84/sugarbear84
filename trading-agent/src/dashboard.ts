@@ -4,7 +4,7 @@
 // ============================================================
 
 import * as http from 'http';
-import { loadLedger } from './executor.js';
+import { loadLedger, executePaperTrade } from './executor.js';
 import type { RouterResult } from './router.js';
 import { getPriceHistory } from './research/alchemy-client.js';
 
@@ -14,6 +14,9 @@ const PORT = 3333;
 
 let agentPaused = false;
 export function isAgentPaused(): boolean { return agentPaused; }
+
+let sprintMode = false;
+export function isSprintMode(): boolean { return sprintMode; }
 
 // ── Research log ──────────────────────────────────────────────
 
@@ -210,6 +213,7 @@ async function buildApiData() {
 
   return {
     agentStatus: agentPaused ? 'paused' : 'running',
+    sprintMode,
     portfolio: {
       total, usdBalance: ledger.usdBalance, ethBalance: ledger.ethBalance, ethPrice,
       change: {
@@ -398,6 +402,9 @@ const HTML = `<!DOCTYPE html>
   .btn.ghost:hover { color: var(--text-primary); border-color: #3a3a44; }
   .btn.dim { border-color: transparent; color: var(--text-muted); background: transparent; }
   .btn.dim:hover { color: var(--text-secondary); border-color: var(--border); }
+  .btn.sprint { border-color: var(--amber); color: var(--amber); }
+  .btn.sprint:hover { background: rgba(251,191,36,0.08); }
+  .btn.sprint.active { background: rgba(251,191,36,0.08); }
 
   /* ── Research log ── */
   .research-section-header {
@@ -736,6 +743,7 @@ const HTML = `<!DOCTYPE html>
     </div>
     <span class="last-update" id="lastUpdate">—</span>
     <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Toggle light/dark mode">☀</button>
+    <button class="btn sprint" id="sprintBtn" onclick="toggleSprint()">Sprint</button>
     <button class="btn stop" id="toggleBtn" onclick="toggleAgent()">Pause Bot</button>
   </div>
 </header>
@@ -887,7 +895,14 @@ const HTML = `<!DOCTYPE html>
     <button class="tier-btn t4" data-tier="4" onclick="selectTier(this)">T4 · Meme</button>
     <button class="btn" id="runBtn" onclick="runTier()" style="margin-left:8px">Run T1</button>
   </div>
-  <div style="display:flex;gap:8px">
+  <div style="display:flex;gap:8px;align-items:center">
+    <div id="buyForm" style="display:none;align-items:center;gap:8px">
+      <select id="buyAsset" class="btn" style="cursor:pointer"></select>
+      <input id="buyAmount" type="number" placeholder="USD amount" style="width:100px;padding:6px 10px;background:var(--surface-2);border:1px solid var(--border);color:var(--text-primary);font-family:var(--font);font-size:12px">
+      <button class="btn start" onclick="executeBuy()">Execute Paper Buy</button>
+      <button class="btn dim" onclick="toggleBuyForm()">Cancel</button>
+    </div>
+    <button class="btn ghost" id="buyBtn" onclick="toggleBuyForm()">+ Buy</button>
     <button class="btn dim" onclick="testAlchemy()">Test Alchemy</button>
   </div>
 </footer>
@@ -1057,6 +1072,16 @@ const HTML = `<!DOCTYPE html>
     }
   }
 
+  // ── Toggle sprint ──
+  async function toggleSprint() {
+    const btn = document.getElementById('sprintBtn');
+    const on = !btn.classList.contains('active');
+    await fetch('/api/sprint/' + (on ? 'on' : 'off'), { method: 'POST' });
+    btn.classList.toggle('active', on);
+    btn.textContent = on ? 'Sprint ON' : 'Sprint';
+    showToast(on ? '\u26a1 Sprint mode ON \u2014 accelerated cycles' : 'Sprint mode OFF', on ? 'ok' : '');
+  }
+
   // ── Render ──
   function render() {
     if (!data) return;
@@ -1070,6 +1095,11 @@ const HTML = `<!DOCTYPE html>
     const btn = document.getElementById('toggleBtn');
     btn.textContent = paused ? 'Resume Bot' : 'Pause Bot';
     btn.className = 'btn ' + (paused ? 'start' : 'stop');
+
+    // Sprint button state
+    const sprintBtn = document.getElementById('sprintBtn');
+    sprintBtn.classList.toggle('active', !!data.sprintMode);
+    sprintBtn.textContent = data.sprintMode ? 'Sprint ON' : 'Sprint';
 
     // Research log
     renderResearchLog(data.researchLog);
@@ -1164,6 +1194,31 @@ const HTML = `<!DOCTYPE html>
         <td class="td-muted">\${fmtDate(p.timestamp)}</td>
       </tr>\`;
     }).join('');
+  }
+
+  // ── Buy form ──
+  function toggleBuyForm() {
+    const form = document.getElementById('buyForm');
+    const btn = document.getElementById('buyBtn');
+    const visible = form.style.display !== 'none';
+    form.style.display = visible ? 'none' : 'flex';
+    btn.style.display = visible ? 'inline-block' : 'none';
+    if (!visible && data?.watchedAssets) {
+      const sel = document.getElementById('buyAsset');
+      sel.innerHTML = data.watchedAssets.map(a => \`<option value="\${a.symbol}">\${a.symbol} \u2014 \${a.price ? usd(a.price) : '\u2014'}</option>\`).join('');
+    }
+  }
+  async function executeBuy() {
+    const symbol = document.getElementById('buyAsset').value;
+    const amountUsd = parseFloat(document.getElementById('buyAmount').value);
+    if (!symbol || !amountUsd || amountUsd <= 0) { showToast('Enter a valid amount', 'err'); return; }
+    showToast('Executing paper buy\u2026');
+    try {
+      const res = await fetch('/api/manual-trade', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ symbol, amountUsd }) });
+      const d = await res.json();
+      if (d.ok) { showToast('\u2713 Bought $' + amountUsd + ' ' + symbol + ' at ' + usd(d.price), 'ok'); toggleBuyForm(); setTimeout(loadData, 500); }
+      else showToast('\u2717 ' + d.error, 'err');
+    } catch(e) { showToast('\u2717 Request failed', 'err'); }
   }
 
   // ── Data loading ──
@@ -1348,6 +1403,56 @@ export function startDashboard(): void {
       agentPaused = false;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'running' }));
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/sprint/on') {
+      sprintMode = true;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'sprint_on' }));
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/sprint/off') {
+      sprintMode = false;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'sprint_off' }));
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/manual-trade') {
+      try {
+        const body = await new Promise<string>((resolve) => {
+          let data = '';
+          req.on('data', chunk => data += chunk);
+          req.on('end', () => resolve(data));
+        });
+        const { symbol, amountUsd } = JSON.parse(body);
+        if (!symbol || !amountUsd || amountUsd <= 0) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'Invalid symbol or amount' }));
+          return;
+        }
+        const prices = await getEnrichedPrices();
+        const priceData = prices[symbol.toUpperCase()];
+        if (!priceData || priceData.price === 0) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: `No price available for ${symbol}` }));
+          return;
+        }
+        const ledger = loadLedger();
+        const result = executePaperTrade('BUY', amountUsd, priceData.price, null, null, ledger, { pair: `${symbol.toUpperCase()}/USDC` });
+        if (result.startsWith('⚠️')) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: result }));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, price: priceData.price }));
+        }
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
       return;
     }
 
