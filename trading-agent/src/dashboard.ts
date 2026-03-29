@@ -57,22 +57,30 @@ export function setDashboardMarket(result: RouterResult): void {
 // ── Watched assets ────────────────────────────────────────────
 
 const WATCHED = [
-  { symbol: 'ETH',   name: 'Ethereum',    cgId: 'ethereum'    },
-  { symbol: 'BTC',   name: 'Bitcoin',     cgId: 'bitcoin'     },
-  { symbol: 'UNI',   name: 'Uniswap',     cgId: 'uniswap'     },
-  { symbol: 'AAVE',  name: 'Aave',        cgId: 'aave'        },
-  { symbol: 'LINK',  name: 'Chainlink',   cgId: 'chainlink'   },
-  { symbol: 'BNKR',  name: 'Bankr',       cgId: 'bankr'       },
-  { symbol: 'BRETT', name: 'Based Brett', cgId: 'based-brett' },
-  { symbol: 'TOSHI', name: 'Toshi',       cgId: 'toshi'       },
-  { symbol: 'DEGEN', name: 'Degen',       cgId: 'degen-base'  },
+  // ── Core ─────────────────────────────────────────────────────
+  { symbol: 'ETH',    name: 'Ethereum',    cgId: 'ethereum',          category: 'Core'     },
+  { symbol: 'BTC',    name: 'Bitcoin',     cgId: 'bitcoin',           category: 'Core'     },
+  // ── DeFi ─────────────────────────────────────────────────────
+  { symbol: 'UNI',    name: 'Uniswap',     cgId: 'uniswap',           category: 'DeFi'     },
+  { symbol: 'AAVE',   name: 'Aave',        cgId: 'aave',              category: 'DeFi'     },
+  { symbol: 'LINK',   name: 'Chainlink',   cgId: 'chainlink',         category: 'DeFi'     },
+  // ── Emerging (Base) ──────────────────────────────────────────
+  { symbol: 'MORPHO', name: 'Morpho',      cgId: 'morpho',            category: 'Emerging' },
+  { symbol: 'AERO',   name: 'Aerodrome',   cgId: 'aerodrome-finance', category: 'Emerging' },
+  { symbol: 'BNKR',   name: 'Bankr',       cgId: 'bankr',             category: 'Emerging' },
+  // ── AI ───────────────────────────────────────────────────────
+  { symbol: 'RENDER', name: 'Render',      cgId: 'render-token',      category: 'AI'       },
+  { symbol: 'TAO',    name: 'Bittensor',   cgId: 'bittensor',         category: 'AI'       },
+  { symbol: 'FET',    name: 'Fetch.ai',    cgId: 'fetch-ai',          category: 'AI'       },
+  { symbol: 'GRT',    name: 'The Graph',   cgId: 'the-graph',         category: 'AI'       },
+  { symbol: 'WLD',    name: 'Worldcoin',   cgId: 'worldcoin-wld',     category: 'AI'       },
+  // ── Meme ─────────────────────────────────────────────────────
+  { symbol: 'BRETT',  name: 'Based Brett', cgId: 'based-brett',       category: 'Meme'     },
+  { symbol: 'TOSHI',  name: 'Toshi',       cgId: 'toshi',             category: 'Meme'     },
+  { symbol: 'DEGEN',  name: 'Degen',       cgId: 'degen-base',        category: 'Meme'     },
 ];
 
-const COINGECKO_IDS: Record<string, string> = {
-  ETH: 'ethereum', BTC: 'bitcoin', UNI: 'uniswap',
-  AAVE: 'aave', LINK: 'chainlink',
-  BNKR: 'bankr', BRETT: 'based-brett', TOSHI: 'toshi', DEGEN: 'degen-base',
-};
+const COINGECKO_IDS: Record<string, string> = Object.fromEntries(WATCHED.map(a => [a.symbol, a.cgId]));
 
 // ── Price cache ───────────────────────────────────────────────
 
@@ -80,28 +88,89 @@ interface PriceData { price: number; change24h: number; vol24h: number; }
 let priceCache: Record<string, PriceData> = {};
 let priceCacheTime = 0;
 
+// Internal price log for computing 24h change on Alchemy-sourced tokens
+const assetPriceLog: Record<string, { price: number; time: number }[]> = {};
+
+function recordAssetPrice(symbol: string, price: number): void {
+  if (!assetPriceLog[symbol]) assetPriceLog[symbol] = [];
+  assetPriceLog[symbol].push({ price, time: Date.now() });
+  const cutoff = Date.now() - 25 * 60 * 60 * 1000;
+  assetPriceLog[symbol] = assetPriceLog[symbol].filter(e => e.time > cutoff);
+}
+
+function get24hChange(symbol: string, currentPrice: number): number {
+  const log = assetPriceLog[symbol] ?? [];
+  const target = Date.now() - 24 * 60 * 60 * 1000;
+  const old = log.reduce((best: { price: number; time: number } | null, e) =>
+    !best || Math.abs(e.time - target) < Math.abs(best.time - target) ? e : best, null);
+  if (!old || old.price === 0 || Math.abs(old.time - target) > 2 * 60 * 60 * 1000) return 0;
+  return ((currentPrice - old.price) / old.price) * 100;
+}
+
+async function getAlchemyPricesBatch(symbols: string[]): Promise<Record<string, number>> {
+  const apiKey = process.env.ALCHEMY_API_KEY;
+  if (!apiKey) return {};
+  try {
+    const params = symbols.map(s => `symbols[]=${encodeURIComponent(s)}`).join('&');
+    const res = await fetch(`https://api.g.alchemy.com/prices/v1/${apiKey}/tokens/by-symbol?${params}`);
+    if (!res.ok) return {};
+    const data = await res.json() as {
+      data?: Array<{ symbol: string; prices?: Array<{ currency: string; value: string }>; error?: string }>;
+    };
+    const out: Record<string, number> = {};
+    for (const item of data.data ?? []) {
+      if (!item.error && item.prices?.length) {
+        const usdPrice = item.prices.find(p => p.currency === 'usd');
+        if (usdPrice) out[item.symbol.toUpperCase()] = parseFloat(usdPrice.value);
+      }
+    }
+    return out;
+  } catch { return {}; }
+}
+
 async function getEnrichedPrices(): Promise<Record<string, PriceData>> {
   const now = Date.now();
-  if (now - priceCacheTime < 60_000 && Object.keys(priceCache).length > 0) return priceCache;
+  if (now - priceCacheTime < 300_000 && Object.keys(priceCache).length > 0) return priceCache;
 
-  const cgIds = WATCHED.map(a => a.cgId).join(',');
-  try {
-    const res = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${cgIds}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`
-    );
-    const data = await res.json() as Record<string, { usd: number; usd_24h_change: number; usd_24h_vol: number }>;
+  // Step 1: Alchemy batch price lookup (no rate limits)
+  const alchemyPrices = await getAlchemyPricesBatch(WATCHED.map(a => a.symbol));
 
-    const out: Record<string, PriceData> = {};
-    for (const asset of WATCHED) {
-      const d = data[asset.cgId];
-      if (d) out[asset.symbol] = { price: d.usd, change24h: d.usd_24h_change, vol24h: d.usd_24h_vol };
-    }
-    priceCache = out;
-    priceCacheTime = now;
-    return out;
-  } catch {
-    return priceCache;
+  // Step 2: CoinGecko fallback for tokens Alchemy doesn't support
+  const missing = WATCHED.filter(a => !alchemyPrices[a.symbol]);
+  let geckoData: Record<string, { usd: number; usd_24h_change: number; usd_24h_vol: number }> = {};
+  if (missing.length > 0) {
+    try {
+      const cgIds = missing.map(a => a.cgId).join(',');
+      const res = await fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${cgIds}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`
+      );
+      if (res.ok) {
+        const raw = await res.json();
+        if (raw && typeof raw === 'object' && !raw.status) geckoData = raw;
+      }
+    } catch { /* ignore */ }
   }
+
+  const out: Record<string, PriceData> = {};
+  for (const asset of WATCHED) {
+    const alchemyPrice = alchemyPrices[asset.symbol];
+    if (alchemyPrice) {
+      recordAssetPrice(asset.symbol, alchemyPrice);
+      out[asset.symbol] = { price: alchemyPrice, change24h: get24hChange(asset.symbol, alchemyPrice), vol24h: 0 };
+    } else {
+      const d = geckoData[asset.cgId];
+      if (d) {
+        recordAssetPrice(asset.symbol, d.usd);
+        out[asset.symbol] = { price: d.usd, change24h: d.usd_24h_change ?? 0, vol24h: d.usd_24h_vol ?? 0 };
+      } else if (priceCache[asset.symbol]) {
+        out[asset.symbol] = priceCache[asset.symbol]; // stale but better than nothing
+      }
+    }
+  }
+
+  priceCache = out;
+  priceCacheTime = now;
+  return out;
 }
 
 // ── API data builder ──────────────────────────────────────────
@@ -236,6 +305,15 @@ const HTML = `<!DOCTYPE html>
   .assets-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
   @media (max-width: 1200px) { .assets-grid { grid-template-columns: repeat(3, 1fr); } }
   @media (max-width: 700px)  { .assets-grid { grid-template-columns: repeat(2, 1fr); } }
+
+  /* ── Asset category groups ── */
+  .asset-group { margin-bottom: 20px; }
+  .asset-group-label {
+    font-size: 10px; font-weight: 600; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--text-muted);
+    margin-bottom: 10px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+  }
 
   /* ── Theme toggle ── */
   .theme-btn {
@@ -739,9 +817,7 @@ const HTML = `<!DOCTYPE html>
   <!-- Watched Assets -->
   <div class="section">
     <div class="section-label">Watched Assets</div>
-    <div class="assets-grid" id="assetsGrid">
-      <div class="asset-card" style="color:var(--text-muted);font-size:12px;display:flex;align-items:center;justify-content:center">Loading…</div>
-    </div>
+    <div id="assetsGrid"><div style="color:var(--text-muted);font-size:12px;padding:20px">Loading…</div></div>
   </div>
 
   <!-- Open Positions -->
@@ -1033,24 +1109,35 @@ const HTML = `<!DOCTYPE html>
       }
     }
 
-    // Watched assets
+    // Watched assets — grouped by category
     const grid = document.getElementById('assetsGrid');
     if (data.watchedAssets && data.watchedAssets.length > 0) {
-      grid.innerHTML = data.watchedAssets.map(a => {
-        const cls = a.change24h >= 0 ? 'pos' : 'neg';
-        const arrow = a.change24h >= 0 ? '↑' : '↓';
+      const groups = {};
+      for (const a of data.watchedAssets) {
+        const cat = a.category || 'Other';
+        if (!groups[cat]) groups[cat] = [];
+        groups[cat].push(a);
+      }
+      const ORDER = ['Core', 'DeFi', 'Emerging', 'AI', 'Meme'];
+      const cats = ORDER.filter(c => groups[c]).concat(Object.keys(groups).filter(c => !ORDER.includes(c)));
+      const cardHtml = a => {
+        const cls = (a.change24h ?? 0) >= 0 ? 'pos' : 'neg';
+        const arrow = (a.change24h ?? 0) >= 0 ? '↑' : '↓';
         return \`<div class="asset-card">
-          <div class="asset-header">
-            <div>
-              <div class="asset-symbol">\${a.symbol}</div>
-              <div class="asset-name">\${a.name}</div>
-            </div>
-          </div>
+          <div class="asset-header"><div>
+            <div class="asset-symbol">\${a.symbol}</div>
+            <div class="asset-name">\${a.name}</div>
+          </div></div>
           <div class="asset-price">\${a.price ? usd(a.price) : '—'}</div>
           <div class="asset-change \${cls}">\${arrow} \${a.change24h ? Math.abs(a.change24h).toFixed(2)+'%' : '—'}</div>
           <div class="asset-vol">Vol \${compact(a.vol24h)}</div>
         </div>\`;
-      }).join('');
+      };
+      grid.innerHTML = cats.map(cat => \`
+        <div class="asset-group">
+          <div class="asset-group-label">\${cat}</div>
+          <div class="assets-grid">\${groups[cat].map(cardHtml).join('')}</div>
+        </div>\`).join('');
     }
 
     // Positions
