@@ -75,7 +75,7 @@ async function getGlobalMarket(): Promise<{
     const data = await res.json() as {
       data: { market_cap_percentage: Record<string, number> };
     };
-    const pct = data.data.market_cap_percentage;
+    const pct = data.data?.market_cap_percentage ?? {};
     const btc = pct.btc ?? 50;
     const eth = pct.eth ?? 15;
     return { btcDominance: btc, ethDominance: eth, altcoinDominance: 100 - btc - eth };

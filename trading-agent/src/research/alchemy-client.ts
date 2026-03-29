@@ -36,11 +36,10 @@ export async function getPriceHistory(symbol: string, days = 7): Promise<PricePo
 
   try {
     const url  = `https://api.g.alchemy.com/prices/v1/${apiKey}/tokens/historical`;
-    const now  = Math.floor(Date.now() / 1000);
     const body = {
       symbol: symbol.toUpperCase(),
-      startTime: now - days * 24 * 60 * 60,
-      endTime:   now,
+      startTime: new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString(),
+      endTime:   new Date().toISOString(),
       interval:  '1h',
     };
 
@@ -58,10 +57,12 @@ export async function getPriceHistory(symbol: string, days = 7): Promise<PricePo
     const data = await res.json() as { data?: Array<{ timestamp: number; value: string }> };
     if (!data?.data?.length) return [];
 
-    return data.data.map(p => ({
-      price: parseFloat(p.value),
-      time:  new Date(p.timestamp * 1000).toISOString(),
-    }));
+    return data.data
+      .filter(p => p.timestamp != null)
+      .map(p => ({
+        price: parseFloat(p.value),
+        time:  new Date(typeof p.timestamp === 'number' ? p.timestamp * 1000 : p.timestamp).toISOString(),
+      }));
   } catch (err: any) {
     console.error(`⚠️  Alchemy price history (${symbol}):`, err.message);
     return [];
