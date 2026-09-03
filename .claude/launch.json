@@ -4,20 +4,40 @@
     {
       "name": "Coolbreeze (Multi-Strategy Agent)",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd /Users/deanjackson/trading-agent/trading-agent && npm start"],
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/deanjackson/trading-agent/trading-agent && npm start"
+      ],
       "port": 3333
     },
     {
       "name": "BaseWaves (Next.js)",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd /Users/deanjackson/trading-agent/BaseWaves && npm run dev"],
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/deanjackson/trading-agent/BaseWaves && npm run dev"
+      ],
       "port": 3000
     },
     {
       "name": "Hardhat Node (Local Chain)",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd /Users/deanjackson/trading-agent/BaseWaves && npx hardhat node"],
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/deanjackson/trading-agent/BaseWaves && npx hardhat node"
+      ],
       "port": 8545
+    },
+    {
+      "name": "coolbreeze-ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "ui"
+      ],
+      "cwd": "trading-agent",
+      "port": 3001,
+      "autoPort": true
     }
   ]
 }
