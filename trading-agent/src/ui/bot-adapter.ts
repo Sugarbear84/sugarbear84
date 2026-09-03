@@ -68,6 +68,22 @@ export interface RiskCheck {
 
 export interface DailyReport { date: string; summary: string; net: number; }
 
+/**
+ * One row in the "Since your last visit" band (IA proposal §5.1).
+ * severity: 0 = needs you (halt, threshold neared, research skipped),
+ * 1 = trades, 2 = merely new. The client keeps the read-cursor per viewer
+ * (localStorage) and filters; the server just serves recent events.
+ */
+export interface VisitEvent {
+  ts: number;                 // ms epoch
+  kind: 'halt' | 'threshold' | 'research' | 'trade' | 'journal';
+  text: string;
+  value?: string;
+  valueTone?: 'pos' | 'neg' | 'amber';
+  cta?: string;               // tab to open: 'journal' | 'risk' | 'analytics'
+  pnl?: number;               // trades only — feeds the receipt line's book delta
+}
+
 export interface BotSnapshot {
   bot: { id: string; name: string };
   running: boolean;
@@ -90,6 +106,9 @@ export interface BotSnapshot {
   journal: JournalEntry[];
   params: Record<string, number>;
   assets: Record<number, string[]>;
+  /** Roster additions awaiting wire-token verification — visible, not traded. */
+  pendingAssets: Record<number, string[]>;
+  events: VisitEvent[];
   riskLog: RiskCheck[];
   reports: DailyReport[];
   equityRanges: Record<string, number[]>;   // deck header sparkline per range
@@ -219,6 +238,23 @@ export class DemoAdapter implements BotAdapter {
   };
 
   private assets: Record<number, string[]> = { 2: ['AERO', 'AAVE', 'LINK'], 3: ['MORPHO', 'RENDER'], 4: ['BRETT', 'DEGEN'], 5: ['UNI'] };
+  private pendingAssets: Record<number, string[]> = { 2: [], 3: [], 4: [], 5: [] };
+
+  /** Recent activity for the "Since your last visit" band. */
+  private events(): VisitEvent[] {
+    const h = (n: number) => Date.now() - n * 3600 * 1000;
+    const ev: VisitEvent[] = [
+      { ts: h(5), kind: 'trade', text: 'BRETT closed by momentum exit after the 4h rolled over', value: '+$8.36', valueTone: 'pos', pnl: 8.36, cta: 'journal' },
+      { ts: h(5.2), kind: 'trade', text: 'AERO bought $60 — tranche 2 of 3, stop $0.83', pnl: 0, cta: 'journal' },
+      { ts: h(7), kind: 'threshold', text: 'Daily loss touched −0.8% against the −8% halt line, then recovered', value: '−0.8%', valueTone: 'amber', cta: 'risk' },
+      { ts: h(22), kind: 'research', text: 'T3 research skipped — price feed returned n/a twice · next cycle 07:00 CT', cta: 'journal' },
+      { ts: h(5.5), kind: 'journal', text: '4 new decisions in the journal, 2 of them trades', cta: 'journal' },
+    ];
+    if (this.halted) {
+      ev.unshift({ ts: Date.now() - 60000, kind: 'halt', text: 'Trading halted — ' + (this.haltReason || 'stopped'), value: 'HALTED', valueTone: 'neg', cta: 'risk' });
+    }
+    return ev;
+  }
 
   private posPnl(p: Position) { return (p.mark - p.entry) / p.entry * p.size; }
   private book() {
@@ -258,6 +294,8 @@ export class DemoAdapter implements BotAdapter {
       journal: JOURNAL,
       params: this.params,
       assets: this.assets,
+      pendingAssets: this.pendingAssets,
+      events: this.events(),
       riskLog: [
         { time: '14:05', value: '$1,265.92', dd: '0.0%', day: '0.0%', consec: '1', trades: '3', status: 'ok' },
         { time: '14:04', value: '$1,264.20', dd: '0.1%', day: '0.0%', consec: '1', trades: '3', status: 'ok' },
@@ -340,13 +378,19 @@ export class DemoAdapter implements BotAdapter {
   }
 
   rosterAdd(tier: number, symbol: string) {
-    const list = this.assets[tier];
-    if (list && !list.includes(symbol)) list.push(symbol);
+    // Ratified 2026-09-03: a UI add never activates an asset directly. It
+    // queues the symbol for wire-token verification (CoinGecko + on-chain
+    // checks) and shows as pending until the operator lands it.
+    const active = this.assets[tier];
+    const pending = this.pendingAssets[tier];
+    if (!active || !pending) return;
+    if (active.includes(symbol) || pending.includes(symbol)) return;
+    pending.push(symbol);
   }
 
   rosterRemove(tier: number, symbol: string) {
-    const list = this.assets[tier];
-    if (list) this.assets[tier] = list.filter(s => s !== symbol);
+    if (this.assets[tier]) this.assets[tier] = this.assets[tier].filter(s => s !== symbol);
+    if (this.pendingAssets[tier]) this.pendingAssets[tier] = this.pendingAssets[tier].filter(s => s !== symbol);
   }
 
   chat(text: string): ChatReply {

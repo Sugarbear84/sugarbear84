@@ -141,6 +141,7 @@ const S = {
   staged: {}, drafts: { 2: '', 3: '', 4: '', 5: '' },
   chatOpen: false, chatInput: '', thinking: false,
   clearPrompt: false, clearText: '',
+  visitOpen: true,
   messages: [
     { id: 'm0', from: 'agent', text: 'Morning. Ask me anything about what I did or why — positions, risk, a parameter, or stage a trade in plain words.' },
   ],
@@ -226,6 +227,43 @@ function staleChip() {
   const s = staleSecs();
   const age = s === Infinity ? '—' : s < 3600 ? Math.floor(s / 60) + 'm' : Math.floor(s / 3600) + 'h';
   return '<span style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; color: var(--amber); background: var(--amberBg); border: 1px solid var(--amberEdge); border-radius: 2px; padding: 2px 7px; white-space: nowrap">◷ ' + age + ' OLD</span>';
+}
+
+/* ---------------- "Since your last visit" (IA proposal §5.1) ---------------- */
+const VISIT_SEVERITY = { halt: 0, threshold: 0, research: 0, trade: 1, journal: 2 };
+function visitCursor() {
+  try { const v = Number(localStorage.getItem('cb-last-visit')); if (v) return v; } catch (e) {}
+  return Date.now() - 24 * 3600 * 1000;
+}
+function markVisitRead() {
+  try { localStorage.setItem('cb-last-visit', String(Date.now())); } catch (e) {}
+  setState({ visitOpen: false });
+}
+function agoStr(ts) {
+  const m = Math.max(1, Math.round((Date.now() - ts) / 60000));
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  if (h < 48) return h + 'h ago';
+  return Math.round(h / 24) + 'd ago';
+}
+function visitItems() {
+  const cur = visitCursor();
+  return (D().events || []).filter(e => e.ts > cur)
+    .sort((a, b) => (VISIT_SEVERITY[a.kind] - VISIT_SEVERITY[b.kind]) || (b.ts - a.ts));
+}
+function visitReceipt(items) {
+  const trades = items.filter(i => i.kind === 'trade');
+  const thr = items.filter(i => i.kind === 'threshold' || i.kind === 'halt').length;
+  const res = items.filter(i => i.kind === 'research').length;
+  const pnl = trades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const parts = [];
+  if (trades.length) parts.push(trades.length + (trades.length === 1 ? ' trade' : ' trades'));
+  if (trades.length) parts.push('book ' + aSigned(pnl));
+  if (thr) parts.push(thr + ' threshold' + (thr === 1 ? '' : 's') + ' neared');
+  if (res) parts.push(res + ' research skipped');
+  const jn = items.filter(i => i.kind === 'journal').length;
+  if (!parts.length && jn) parts.push(jn + ' new in the journal');
+  return parts.join(' · ');
 }
 
 function glow(color, strong) {
@@ -358,7 +396,7 @@ function queueResearch(target) {
 }
 function rosterOp(op, tier, symbol) {
   api('/api/ui/roster', { op, tier, symbol }).then(() => sync(false)).then(() => {
-    if (op === 'add') toast('added', symbol + ' added to ' + TIERS[tier].short + ' — live next research cycle', C.blue, C.blueBorder);
+    if (op === 'add') toast('queued', symbol + ' queued for ' + TIERS[tier].short + ' — awaiting wire-token verification, not traded until it lands', C.amber, C.amberEdge);
   }).catch(e => toast('error', String(e.message || e), C.red, C.redBorder));
 }
 function sendChat() {
@@ -486,6 +524,56 @@ function renderNav() {
   </div>`;
 }
 
+function renderVisitBand() {
+  const items = visitItems();
+  const cur = visitCursor();
+  const KINDS = { halt: ['HALTED', 'var(--neg)', 'var(--negBg)'], threshold: ['THRESHOLD', 'var(--amber)', 'var(--amberBg)'], research: ['RESEARCH', 'var(--amber)', 'var(--amberBg)'], trade: ['TRADES', 'var(--accent)', 'var(--accentBg)'], journal: ['NEW', 'var(--muted)', 'var(--rail)'] };
+  const tone = t => t === 'pos' ? 'var(--pos)' : t === 'neg' ? 'var(--neg)' : t === 'amber' ? 'var(--amber)' : 'var(--text2)';
+
+  if (!items.length) return `
+  <div style="display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 22px; border-bottom: 1px solid var(--border); background: var(--rail)">
+    <span style="font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted)">Since your last visit</span>
+    <span style="font-family: 'Instrument Sans', sans-serif; font-size: 12px; color: var(--dim)">nothing happened — quiet book, no thresholds touched</span>
+    <span style="flex: 1"></span>
+    <span style="font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums">${agoStr(cur)}</span>
+  </div>`;
+
+  if (!S.visitOpen) return `
+  <div style="display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 22px; border-bottom: 1px solid var(--border); background: var(--rail)">
+    <span style="font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted)">Since your last visit</span>
+    <span style="font-size: 11px; color: var(--text2); font-variant-numeric: tabular-nums">${esc(visitReceipt(items))}</span>
+    <span style="flex: 1"></span>
+    <button data-on="${on(() => setState({ visitOpen: true }))}" style="${btnMono()}font-size: 9.5px; background: none; border: none; color: var(--accent); cursor: pointer">expand ▾</button>
+  </div>`;
+
+  const counts = {};
+  items.forEach(i => { counts[i.kind] = (counts[i.kind] || 0) + 1; });
+  const chips = Object.keys(KINDS).filter(k => counts[k]).map(k => `
+    <span style="display: inline-flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 700; letter-spacing: 0.08em; padding: 2px 8px; background: ${KINDS[k][2]}; color: ${KINDS[k][1]}; border-radius: 0px">${KINDS[k][0]} <span style="font-variant-numeric: tabular-nums">${counts[k]}</span></span>`).join('');
+  const rows = items.map(r => `
+    <div style="display: flex; align-items: center; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 11.5px">
+      <span style="width: 58px; flex: none; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 10px">${agoStr(r.ts)}</span>
+      <span style="width: 4px; height: 4px; border-radius: 50%; background: ${KINDS[r.kind][1]}; flex: none"></span>
+      <span style="font-family: 'Instrument Sans', sans-serif; font-size: 12.5px; color: var(--text15); min-width: 0">${esc(r.text)}</span>
+      <span style="flex: 1"></span>
+      ${r.value ? `<span style="font-variant-numeric: tabular-nums; font-weight: 600; color: ${tone(r.valueTone)}; flex: none">${esc(r.value)}</span>` : ''}
+      ${r.cta ? `<button data-on="${on(() => setState({ tab: r.cta }))}" style="${btnMono()}font-size: 9.5px; background: none; border: none; color: var(--accent); cursor: pointer; flex: none">open →</button>` : ''}
+    </div>`).join('');
+
+  return `
+  <div style="display: flex; flex-direction: column; gap: 9px; padding: 13px 22px 12px; border-bottom: 1px solid var(--border); background: var(--rail)">
+    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
+      <span style="font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted)">Since your last visit</span>
+      <span style="font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums">${agoStr(cur)}</span>
+      ${chips}
+      <span style="flex: 1"></span>
+      <button data-on="${on(markVisitRead)}" class="hov-accent" style="${btnMono()}font-size: 9.5px; background: none; border: 1px solid var(--hard); color: var(--dim); padding: 2px 9px; border-radius: 2px; cursor: pointer">Mark all read</button>
+      <button data-on="${on(() => setState({ visitOpen: false }))}" style="${btnMono()}font-size: 9.5px; background: none; border: none; color: var(--muted); cursor: pointer">collapse ▴</button>
+    </div>
+    <div style="display: flex; flex-direction: column">${rows}</div>
+  </div>`;
+}
+
 /* ---------------- render: Deck page ---------------- */
 function renderDeck() {
   const d = D();
@@ -557,6 +645,7 @@ function renderDeck() {
 
   return `
   <div data-screen-label="Deck" style="display: flex; flex-direction: column; cursor: ${TH.cursor}">
+    ${renderVisitBand()}
     <div style="display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 1px; background: var(--border)">
       <div style="background: var(--card); padding: 20px 22px; display: flex; flex-direction: column; gap: 14px">
         <div style="display: flex; align-items: flex-end; gap: 10px 28px; flex-wrap: wrap">
@@ -1419,14 +1508,11 @@ function renderConfig() {
 
   const presets = PRESETS.map(p => {
     const active = Object.keys(p.values).every(k => (s.staged[k] != null ? s.staged[k] : appliedParams()[k]) === p.values[k]);
+    // Unwired by operator decision (2026-09-03): the preset values came from
+    // the design mock and must be re-measured against the live book before
+    // they may stage anything. The module stays visible; LOAD stages nothing.
     const loadId = on(() => {
-      const staged2 = Object.assign({}, S.staged);
-      Object.keys(p.values).forEach(k => {
-        if (p.values[k] === appliedParams()[k]) delete staged2[k]; else staged2[k] = p.values[k];
-      });
-      S.staged = staged2;
-      render();
-      toast('staged', p.name + ' loadout staged — review and apply', C.blue, C.blueBorder);
+      toast('unwired', 'Presets ship unwired — values pending re-measurement against the live book', C.amber, C.amberEdge);
     });
     return `
     <button data-on="${loadId}" class="hov-hard press" style="text-align: left; ${btnMono()}display: flex; align-items: center; gap: 12px; background: ${active ? C.blueBg : C.panel}; border: 1px solid ${active ? C.blueBorder : C.border}; border-left: 3px solid ${active ? C.blue : C.muted}; border-radius: 2px; padding: 10px 12px; cursor: pointer; box-shadow: 0 2px 0 var(--border)">
@@ -1509,6 +1595,12 @@ function renderConfig() {
       </div>
       <div style="display: flex; flex-wrap: wrap; gap: 6px">
         ${rows}
+        ${((d.pendingAssets || {})[t] || []).map(sym => `
+        <div title="Queued for wire-token verification (CoinGecko + on-chain checks). Not researched or traded until the operator lands it." style="display: flex; align-items: center; gap: 8px; border: 1px dashed var(--amberEdge); background: var(--amberBg2); border-radius: 2px; padding: 5px 7px 5px 9px">
+          <span style="font-size: 11.5px; font-weight: 600; color: var(--warnText)">${esc(sym)}</span>
+          <span style="font-size: 9px; font-weight: 700; letter-spacing: 0.06em; color: var(--amber)">WIRE-TOKEN PENDING</span>
+          <button data-on="${on(() => rosterOp('remove', t, sym))}" class="hov-neg" style="${btnMono()}font-size: 10px; background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 2px">×</button>
+        </div>`).join('')}
         <div style="display: flex; align-items: center; gap: 6px; border: 1px dashed var(--hard); border-radius: 2px; padding: 4px 8px">
           <input type="text" placeholder="+ SLOT" value="${esc(S.drafts[t] || '')}" data-input="${on((e, el) => { S.drafts[t] = el.value.toUpperCase(); })}" style="font-size: 11px; width: 66px; border: none; outline: none; background: none; color: var(--text); text-transform: uppercase">
           <button data-on="${on(() => { const v = (S.drafts[t] || '').trim().toUpperCase(); if (!v) return; S.drafts[t] = ''; rosterOp('add', t, v); })}" style="${btnMono()}font-size: 10px; background: none; border: none; color: var(--accent); cursor: pointer">add</button>
@@ -1518,6 +1610,7 @@ function renderConfig() {
   }).join('');
 
   const rosterCount = [2, 3, 4, 5].reduce((a, t) => a + (d.assets[t] || []).length, 0);
+  const pendingCount = [2, 3, 4, 5].reduce((a, t) => a + ((d.pendingAssets || {})[t] || []).length, 0);
 
   const diffs = Object.keys(s.staged).map(k => {
     const def = PARAM_DEFS.flatMap(g => g.rows).find(r => r.key === k);
@@ -1560,7 +1653,7 @@ function renderConfig() {
           <span style="${btnMono()}font-size: 10px; font-weight: 700; color: var(--muted)">01</span>
           <span style="font-size: 9.5px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--text2)">Difficulty</span>
           <span style="flex: 1"></span>
-          <span style="font-size: 10px; color: var(--muted)">stages a whole set</span>
+          <span style="font-size: 10px; color: var(--muted)">unwired · values pending re-measurement</span>
         </div>
         ${presets}
       </div>
@@ -1581,7 +1674,7 @@ function renderConfig() {
           <span style="${btnMono()}font-size: 10px; font-weight: 700; color: var(--muted)">08</span>
           <span style="font-size: 9.5px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--text2)">Roster</span>
           <span style="flex: 1"></span>
-          <span style="font-size: 10px; color: var(--muted)">${rosterCount} assets across four tiers · live on the next research cycle</span>
+          <span style="font-size: 10px; color: var(--muted)">${rosterCount} active${pendingCount ? ' · ' + pendingCount + ' pending wire-token' : ''} · adds queue for verification, never trade directly</span>
         </div>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px">${assetGroups}</div>
       </div>

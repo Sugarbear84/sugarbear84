@@ -59,24 +59,31 @@ canonical UI today is the Express UI on **port 3001** (`src/ui/server.ts` +
 SSH tunnel (`Coolbreeze-Dashboard.command`) with `UI_AUTH_TOKEN`. This
 implementation is shaped to drop into that same slot.
 
-### Step 0 — operator ratifies scope (required first)
+### Step 0 — operator ratification: DONE 2026-09-03
 
-Open questions the operator decides before any build lands:
+The four open questions were ruled on by the operator and are now built into
+this branch:
 
-1. **"Since your last visit" band** — designed in the IA proposal (§5.1) but
-   absent from the final deck. Build it, or drop it? (It needs an event feed
-   with read-cursors — real work, not a render.)
-2. **Chat wiring** — the deck's chat is a designed surface; the demo serves
-   canned replies. Real wiring means an Anthropic API call server-side with
-   read-only access to ledger/journal/params, and chat-staged trades still
-   going through the same review modal. Which key, and is the quota acceptable?
-3. **Roster edits** — the UI can add/remove tier assets, but the live
-   convention is `npm run wire-token` (CoinGecko + on-chain verification).
-   Recommendation: UI "add" queues a wire-token request for the operator
-   rather than writing `config/assets.json` blind.
-4. **Presets (CAUTIOUS/STANDARD/AGGRESSIVE)** and the **Difficulty numbers** —
-   the demo values came from the deck's mock. Live values must be measured
-   against the real params file, not carried over.
+1. **"Since your last visit" band — BUILD IT (ratified, built).** Top band of
+   the Deck, expanded on arrival, kind chips + rows in severity order
+   (needs-you first), collapses to the one-line receipt, quiet 40px line when
+   nothing happened. The read-cursor is per-viewer (`localStorage
+   cb-last-visit`); the server just serves recent `events`. LiveAdapter must
+   emit real events (trade closes/opens, threshold approaches, skipped
+   research, halts) — the demo fabricates them.
+2. **Chat wiring — HOLD (ratified).** Canned server-side replies stay; real
+   wiring (API key, read-only tools, review-gated trades) is a later, separate
+   decision.
+3. **Roster adds queue for wire-token — YES (ratified, built).** A UI add
+   never activates an asset: it lands in `pendingAssets`, renders as a dashed
+   amber "WIRE-TOKEN PENDING" chip, and the roster states "adds queue for
+   verification, never trade directly". LiveAdapter maps the pending queue to
+   an operator-visible wire-token task, never a direct `config/assets.json`
+   write.
+4. **Difficulty presets — KEEP IN THE UI, UNWIRED (ratified, built).** The
+   module stays visible; LOAD stages nothing and says so ("values pending
+   re-measurement against the live book"). Re-wiring is gated on measuring
+   real preset values against the live params file.
 
 ### Step 1 — LiveAdapter (the only new live code)
 
